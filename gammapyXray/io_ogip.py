@@ -37,8 +37,8 @@ def from_hdulist(cls, hdulist, hdu1="MATRIX", hdu2="EBOUNDS"):
     for i, l in enumerate(data):
         if l.field("N_GRP"):
             m_start = 0
-            for k in range(l.field("N_GRP")):
 
+            for k in range(l.field("N_GRP")):
                 if np.isscalar(l.field("N_CHAN")):
                     f_chan = l.field("F_CHAN")
                     n_chan = l.field("N_CHAN")
@@ -46,20 +46,32 @@ def from_hdulist(cls, hdulist, hdu1="MATRIX", hdu2="EBOUNDS"):
                     f_chan = l.field("F_CHAN")[k]
                     n_chan = l.field("N_CHAN")[k]
 
-                pdf_matrix[i, f_chan : f_chan + n_chan] = l.field("MATRIX")[
-                    m_start : m_start + n_chan
-                ]
+                try:
+                    pdf_matrix[i, f_chan : f_chan + n_chan] = l.field("MATRIX")[
+                        m_start : m_start + n_chan
+                    ]
+                except IndexError:
+                    # This is probably a single-channel (e.g. UVOT uvot2pha rsp file)
+                    pdf_matrix[i, f_chan : f_chan + n_chan] = np.asarray([l.field("MATRIX"),])[
+                        m_start : m_start + n_chan
+                    ]
+
                 m_start += n_chan
 
     table = Table.read(ebounds_hdu)
     energy_min = table["E_MIN"].quantity
     energy_max = table["E_MAX"].quantity
+    # in uvot2pha the energies are reversed in the EBOUNDS HDU:
+    if energy_min>energy_max:
+        energy_min,energy_max = energy_max,energy_min
+
     energy_edges = np.append(energy_min.value, energy_max.value[-1]) * energy_min.unit
     energy_axis = MapAxis.from_edges(energy_edges, name="energy", interp="lin")
 
     table = Table.read(matrix_hdu)
     energy_min = table["ENERG_LO"].quantity
     energy_max = table["ENERG_HI"].quantity
+    
     # To avoid that min edge is 0
     energy_min[0] += 1e-2 * (energy_max[0] - energy_min[0])
     energy_edges = np.append(energy_min.value, energy_max.value[-1]) * energy_min.unit
@@ -156,9 +168,16 @@ class StandardOGIPDatasetReader:
 
     def _read_gti(self, hdulist):
         """Read GTI table from input HDUList"""
+        from astropy.time import Time
         gti = None
         if self.gti_hdu in hdulist:
-            gti = GTI(Table.read(hdulist[self.gti_hdu]))
+            header = hdulist[self.gti_hdu].header
+            gti_table = Table.read(hdulist[self.gti_hdu])
+            ref_mjd = header['MJDREFI']+header['MJDREFF']
+            if gti_table['START'].unit == 's':
+                gti_table['START'] = Time(ref_mjd+gti_table['START'].to('s').value/86400.,format='mjd')
+                gti_table['STOP']  = Time(ref_mjd+gti_table['STOP'].to('s').value/86400.,format='mjd')
+            gti = GTI(gti_table)
         return gti
 
     @staticmethod
@@ -236,7 +255,10 @@ class StandardOGIPDatasetReader:
         energy_axis = edisp_kernel.axes["energy"]
         energy_true_axis = edisp_kernel.axes["energy_true"]
 
-        arf_table = Table.read(filenames["arffile"], hdu="SPECRESP")
+        # Some instruments, e.g. UVOT and BAT, do not have separate rmffile and arffile, but a respfile.
+        if str(filenames["arffile"]).split("/")[-1] != "NONE":
+            arf_table = Table.read(filenames["arffile"], hdu="SPECRESP")
+        
         bkg_table = Table.read(filenames["bkgfile"])
         data_bkg = self.extract_spectrum(bkg_table)
 
@@ -250,14 +272,25 @@ class StandardOGIPDatasetReader:
         acceptance_off = RegionNDMap(geom=geom, data=data_bkg["acceptance"], unit="")
 
         geom_true = RegionGeom(region=region, wcs=wcs, axes=[energy_true_axis])
-        exposure = arf_table["SPECRESP"].quantity * data["livetime"]
-        exposure = RegionNDMap(geom=geom_true, data=exposure.value, unit=exposure.unit)
 
+        if str(filenames["arffile"]).split("/")[-1] != "NONE":
+            # standard case, arf_table contains the response
+            exposure = arf_table["SPECRESP"].quantity * data["livetime"]
+        else:
+            # extract exposure and migration matrix from the rsp file. 
+            exposure = edisp_kernel.data *u.Unit("cm2") * data["livetime"]
+            edisp_kernel.data[edisp_kernel.data>0] *= 1./edisp_kernel.data[edisp_kernel.data>0] 
+
+        exposure = RegionNDMap(geom=geom_true, data=exposure.value, unit=exposure.unit)
         edisp = EDispKernelMap.from_edisp_kernel(edisp_kernel, geom=exposure.geom)
 
         index = np.where(data["grouping"] == 1)[0]
-        edges = np.append(energy_axis.edges[index], energy_axis.edges[-1])
-        grouping_axis = MapAxis.from_energy_edges(edges, interp=energy_axis._interp)
+        if len(index)!=0:
+            edges = np.append(energy_axis.edges[index], energy_axis.edges[-1])
+            grouping_axis = MapAxis.from_energy_edges(edges, interp=energy_axis._interp)
+        else:
+            # no grouping to be applied to the data
+            grouping_axis = energy_axis 
 
         name = make_name(name)
         dataset = StandardOGIPDataset(

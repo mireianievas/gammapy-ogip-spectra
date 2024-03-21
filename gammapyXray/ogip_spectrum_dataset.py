@@ -54,7 +54,8 @@ class StandardOGIPDataset(SpectrumDatasetOnOff):
         axis = kwargs.pop("grouping_axis", None)
         super().__init__(*args, **kwargs)
         self.grouping_axis = axis
-        self.apply_grouping(self.grouping_axis)
+        if axis.nbin > 1:
+            self.apply_grouping(self.grouping_axis)
 
     @property
     def grouped(self):
