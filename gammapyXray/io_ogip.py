@@ -62,7 +62,7 @@ def from_hdulist(cls, hdulist, hdu1="MATRIX", hdu2="EBOUNDS"):
     energy_min = table["E_MIN"].quantity
     energy_max = table["E_MAX"].quantity
     # in uvot2pha the energies are reversed in the EBOUNDS HDU:
-    if energy_min>energy_max:
+    if energy_min[0]>energy_max[0]:
         energy_min,energy_max = energy_max,energy_min
 
     energy_edges = np.append(energy_min.value, energy_max.value[-1]) * energy_min.unit
