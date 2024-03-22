@@ -279,7 +279,8 @@ class StandardOGIPDatasetReader:
         else:
             # extract exposure and migration matrix from the rsp file. 
             exposure = edisp_kernel.data *u.Unit("cm2") * data["livetime"]
-            edisp_kernel.data[edisp_kernel.data>0] *= 1./edisp_kernel.data[edisp_kernel.data>0] 
+            #edisp_kernel.data[edisp_kernel.data>0] *= 1./edisp_kernel.data[edisp_kernel.data>0] 
+            edisp_kernel.data = 1
 
         exposure = RegionNDMap(geom=geom_true, data=exposure.value, unit=exposure.unit)
         edisp = EDispKernelMap.from_edisp_kernel(edisp_kernel, geom=exposure.geom)
